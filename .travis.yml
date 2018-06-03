@@ -17,9 +17,9 @@ env:
     - sudo mv docker-compose /usr/local/bin
 
 script:
-  - docker-compose up -d && docker-compose exec django python manage.py test
-  - coverage run --source 'POSCaD,dbwrapper' --omit 'venv/*' manage.py test
-  - coverage xml
+  - docker-compose up -d && docker-compose exec prepare_codeclimate_testcoverage.sh
+  - docker-compose exec django python coverage run --source 'POSCaD,dbwrapper' --omit 'venv/*' manage.py test
+  - docker-compose exec django coverage xml
 
 after_script:
   - ./cc-test-reporter after-build --exit-code $TRAVIS_TEST_RESULT
