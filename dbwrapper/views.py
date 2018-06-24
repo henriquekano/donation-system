@@ -42,117 +42,8 @@ class DonationFormView(View):
         payment_form = FormPayment(request.POST)
         donation_form = FormDonation(request.POST)
 
-        tax_id = request.POST.get('tax_id_no_pk_validation', '').replace(".","").replace("-","")
-
         if donation_form.is_valid() and donor_form.is_valid() and payment_form.is_valid():
-            # tax id is required
-            if not tax_id:
-                raise Exception('donor_tax_id need to be provided')
-            donor = Donor.objects.filter(tax_id=tax_id).first()
-            logger.debug("Donor already exists?: {}".format(donor))
-            # creates  a new donor
-            if not donor:
-                new_donor = Donor()
-                new_donor.tax_id = tax_id
-                new_donor.name = donor_form.cleaned_data['name']
-                new_donor.surname = donor_form.cleaned_data['surname']
-                new_donor.phone_number = donor_form.cleaned_data['phone_number']
-                new_donor.email = donor_form.cleaned_data['email']
-                new_donor.course_taken = donor_form.cleaned_data['course_taken']
-                new_donor.course_year = donor_form.cleaned_data['course_year']
-                if request.POST.get('is_anonymous') == "Sim":
-                    new_donor.is_anonymous = True
-                else:
-                    new_donor.is_anonymous = False
-                new_donor.save()
-                donor = new_donor
-                logger.debug("Donor created: {}".format(donor))
-
-            # Donation
-            new_donation = Donation()
-            new_donation.donation_value = donation_form.cleaned_data['donation_value']
-            new_donation.donor = donor
-            new_donation.donor_tax_id = donor.tax_id
-            new_donation.donor_ip_address = request.META['REMOTE_ADDR']
-            new_donation.referral_channel = donation_form.cleaned_data['referral_channel']
-            if request.POST.get('is_recurring') == "Mensal":
-                new_donation.is_recurring = True
-                new_donation.installments = donation_form.cleaned_data['installments']
-            else:
-                new_donation.is_recurring = False
-            new_donation.campaign_name = donation_form.cleaned_data['campaign_name']
-            new_donation.campaign_group = donation_form.cleaned_data['campaign_group']
-            new_donation.save()
-
-            # Payment
-            new_payment = PaymentTransaction()
-            new_payment.name_on_card = payment_form.cleaned_data['name_on_card']
-            new_payment.save()
-
-            logger.info("Donation is recurring: {}".format(new_donation.is_recurring))
-            logger.info("Donation value: {}".format(donation_form.cleaned_data['donation_value']))
-
-            payment_data = {
-                'reference_num': new_donation.donation_id,
-                'billing_name': payment_form.cleaned_data['name_on_card'],
-                'billing_phone': donor.phone_number,
-                'billing_email': donor.email,
-                'card_number': payment_form.cleaned_data['card_number'],
-                'card_expiration_month': payment_form.cleaned_data['expiry_date_month'],
-                'card_expiration_year': payment_form.cleaned_data['expiry_date_year'],
-                'card_cvv': payment_form.cleaned_data['card_code'],
-                'charge_total': new_donation.donation_value,}
-
-            if new_donation.is_recurring:
-                payment_data['currency_code'] = u'BRL'
-                payment_data['recurring_action'] = u'new'
-                payment_data['recurring_start'] = date.today().strftime('%Y-%m-%d')
-                payment_data['recurring_frequency'] = u'1'
-                payment_data['recurring_period'] =  u'monthly'
-                payment_data['recurring_installments'] = new_donation.installments
-                payment_data['recurring_failure_threshold'] = u'2'
-
-            if donor.phone_number is None:
-                payment_data.pop('billing_phone', None)
-
-            dp = DonationProcess(payment_data)
-            is_fraud = dp.fraud_check()
-            if is_fraud:
-                logger.info("Is donor blacklisted?: {}".format(is_fraud))
-                new_donation.is_fraud = True
-                new_donation.save()
-                payment_form.add_error(None,
-                                       "Erro nas informações de cartão de crédito enviadas.")
-            else:
-                try:
-                    response = dp.register_donation(new_donation.is_recurring)
-                    #donation = Donation.objects.get(donation_id=new_donation.donation_id)
-                    if response['was_captured']:
-                        new_donation.was_captured = response['was_captured']
-                        new_donation.response_code = response['response_code']
-                        new_donation.order_id = response['order_id']
-                        new_donation.nsu_id = response['transaction_id']
-                        new_donation.save()
-
-                        template_data = {'first_name': donor.name,
-                             'value': new_donation.donation_value,
-                             'is_recurring': new_donation.is_recurring}
-                        logger.info("Preparing to send e-mail receipt with {}".format(template_data))
-                        dp.send_email_receipt(donor.email, template_data)
-
-                        return render(request, 'dbwrapper/successful_donation.html')
-                    else:
-                        logger.info("Else")
-                        payment_form.add_error(None,
-                                               response['error_msg'])
-                        new_donation.was_captured = response['was_captured']
-                        new_donation.response_code = response['response_code']
-                        new_donation.save()
-
-                except Exception as e:
-                    logger.error('Failed to execute payment', exc_info=True)
-                    payment_form.add_error(None,
-                                           "Infelizmente, não conseguimos processar a sua doação. Nossa equipe já foi avisada. Por favor, tente novamente mais tarde.")
+            self.__do_stuff(request, donor_form, donation_form, payment_form)
 
         data = {'donor_form': donor_form,
                 'donation_form': donation_form,
@@ -162,6 +53,140 @@ class DonationFormView(View):
 
         return render(request, 'dbwrapper/donation_form.html', data)
 
+    def __create_donor(self, request, donor_form, tax_id):
+        new_donor = Donor()
+        new_donor.tax_id = tax_id
+        new_donor.name = donor_form.cleaned_data['name']
+        new_donor.surname = donor_form.cleaned_data['surname']
+        new_donor.phone_number = donor_form.cleaned_data['phone_number']
+        new_donor.email = donor_form.cleaned_data['email']
+        new_donor.course_taken = donor_form.cleaned_data['course_taken']
+        new_donor.course_year = donor_form.cleaned_data['course_year']
+        if request.POST.get('is_anonymous') == "Sim":
+            new_donor.is_anonymous = True
+        else:
+            new_donor.is_anonymous = False
+        new_donor.save()
+        logger.debug("Donor created: {}".format(new_donor))
+
+        return new_donor
+
+    def __create_donation(self, request, donation_form, donor):
+        new_donation = Donation()
+        new_donation.donation_value = donation_form.cleaned_data['donation_value']
+        new_donation.donor = donor
+        new_donation.donor_tax_id = donor.tax_id
+        new_donation.donor_ip_address = request.META['REMOTE_ADDR']
+        new_donation.referral_channel = donation_form.cleaned_data['referral_channel']
+        if request.POST.get('is_recurring') == "Mensal":
+            new_donation.is_recurring = True
+            new_donation.installments = donation_form.cleaned_data['installments']
+        else:
+            new_donation.is_recurring = False
+        new_donation.campaign_name = donation_form.cleaned_data['campaign_name']
+        new_donation.campaign_group = donation_form.cleaned_data['campaign_group']
+        new_donation.save()
+
+        return new_donation
+
+    def __prepare_donation_data_for_payment(self, new_donation, donor, payment_form):
+        payment_data = {
+            'reference_num': new_donation.donation_id,
+            'billing_name': payment_form.cleaned_data['name_on_card'],
+            'billing_phone': donor.phone_number,
+            'billing_email': donor.email,
+            'card_number': payment_form.cleaned_data['card_number'],
+            'card_expiration_month': payment_form.cleaned_data['expiry_date_month'],
+            'card_expiration_year': payment_form.cleaned_data['expiry_date_year'],
+            'card_cvv': payment_form.cleaned_data['card_code'],
+            'charge_total': new_donation.donation_value, }
+
+        if new_donation.is_recurring:
+            payment_data['currency_code'] = u'BRL'
+            payment_data['recurring_action'] = u'new'
+            payment_data['recurring_start'] = date.today().strftime('%Y-%m-%d')
+            payment_data['recurring_frequency'] = u'1'
+            payment_data['recurring_period'] = u'monthly'
+            payment_data['recurring_installments'] = new_donation.installments
+            payment_data['recurring_failure_threshold'] = u'2'
+
+        if donor.phone_number is None:
+            payment_data.pop('billing_phone', None)
+
+        return payment_data
+
+    def __show_fraud_donation(self, new_donation, payment_form):
+        logger.info("Is donor blacklisted?: {}".format(True))
+        new_donation.is_fraud = True
+        new_donation.save()
+        payment_form.add_error(None, "Erro nas informações de cartão de crédito enviadas.")
+
+    def __render_captured_transaction(self, response, request, new_donation, donor, donation_process):
+        new_donation.was_captured = response['was_captured']
+        new_donation.response_code = response['response_code']
+        new_donation.order_id = response['order_id']
+        new_donation.nsu_id = response['transaction_id']
+        new_donation.save()
+
+        template_data = {'first_name': donor.name,
+                         'value': new_donation.donation_value,
+                         'is_recurring': new_donation.is_recurring}
+        logger.info("Preparing to send e-mail receipt with {}".format(template_data))
+        donation_process.send_email_receipt(donor.email, template_data)
+
+        return render(request, 'dbwrapper/successful_donation.html')
+
+    def __show_not_captured_error(self, response, new_donation, payment_form):
+        logger.info("Else")
+        payment_form.add_error(None,
+                               response['error_msg'])
+        new_donation.was_captured = response['was_captured']
+        new_donation.response_code = response['response_code']
+        new_donation.save()
+
+    def __do_stuff(self, request, donor_form, donation_form, payment_form):
+        tax_id = request.POST.get('tax_id_no_pk_validation', '').replace(".","").replace("-","")
+
+        # tax id is required
+        if not tax_id:
+            raise Exception('donor_tax_id need to be provided')
+
+        donor = Donor.objects.filter(tax_id=tax_id).first()
+        logger.debug("Donor already exists?: {}".format(donor))
+        # creates  a new donor
+        if not donor:
+            donor = self.__create_donor(request, donor_form, tax_id)
+
+        # Donation
+        new_donation = self.__create_donation(request, donation_form, donor)
+
+        # Payment
+        new_payment = PaymentTransaction()
+        new_payment.name_on_card = payment_form.cleaned_data['name_on_card']
+        new_payment.save()
+
+        logger.info("Donation is recurring: {}".format(new_donation.is_recurring))
+        logger.info("Donation value: {}".format(donation_form.cleaned_data['donation_value']))
+
+        payment_data = self.__prepare_donation_data_for_payment(new_donation, donor, payment_form)
+
+        dp = DonationProcess(payment_data)
+        is_fraud = dp.fraud_check()
+        if is_fraud:
+            self.__show_fraud_donation(new_donation, payment_form)
+        else:
+            try:
+                response = dp.register_donation(new_donation.is_recurring)
+                #donation = Donation.objects.get(donation_id=new_donation.donation_id)
+                if response['was_captured']:
+                    return self.__render_captured_transaction(response, request, new_donation, donor, dp)
+                else:
+                    self.__show_not_captured_error(response, new_donation, payment_form)
+
+            except Exception as e:
+                logger.error('Failed to execute payment', exc_info=True)
+                payment_form.add_error(None,
+                                        "Infelizmente, não conseguimos processar a sua doação. Nossa equipe já foi avisada. Por favor, tente novamente mais tarde.")
 
 class StatisticsView(View):
     """
